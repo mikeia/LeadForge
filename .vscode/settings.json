@@ -1,0 +1,10 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "npm install": true,
+        ".\\venv\\Scripts\\Activate.ps1": true,
+        "pip": true,
+        "playwright": true,
+        "py": true,
+        ".\\venv\\Scripts\\python.exe": true
+    }
+}
