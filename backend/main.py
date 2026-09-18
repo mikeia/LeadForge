@@ -6,6 +6,7 @@ from playwright.async_api import async_playwright
 import asyncio
 import re
 from typing import List, Optional
+from urllib.parse import parse_qs, unquote, urlparse
 
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
@@ -77,8 +78,25 @@ def sanitize_business_phone(value: Optional[str]) -> str:
     return ''
 
 
-def sanitize_business_url(value: Optional[str]) -> str:
+def unwrap_google_url(value: Optional[str]) -> str:
     text = normalize_text(value)
+    if not text:
+        return ''
+
+    if text.startswith(('http://', 'https://')):
+        parsed = urlparse(text)
+        host = parsed.netloc.lower()
+        if 'google.' in host or host.startswith('www.google.'):
+            params = parse_qs(parsed.query)
+            for key in ('q', 'url', 'u'):
+                target = params.get(key, [''])[0]
+                if target.startswith(('http://', 'https://')):
+                    return unquote(target)
+    return text
+
+
+def sanitize_business_url(value: Optional[str]) -> str:
+    text = unwrap_google_url(value)
     if not text:
         return ''
 
@@ -117,7 +135,7 @@ def is_social_url(value: Optional[str]) -> bool:
 
 
 def sanitize_instagram_url(value: Optional[str]) -> str:
-    text = normalize_text(value)
+    text = unwrap_google_url(value)
     if 'instagram.com' not in text.lower():
         return ''
     if not text.lower().startswith(('http://', 'https://')):
