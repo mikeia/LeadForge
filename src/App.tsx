@@ -70,12 +70,15 @@ function App() {
 
   const [activeView, setActiveView] = useState<'dashboard' | 'scraping' | 'leads' | 'generator' | 'settings'>('scraping');
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
+  const [isLeadDetailsOpen, setIsLeadDetailsOpen] = useState(false);
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [searchTerm, setSearchTerm] = useState('');
   const [isScraping, setIsScraping] = useState(false);
   const [scrapeProgress, setScrapeProgress] = useState('');
   const [scrapeResults, setScrapeResults] = useState<Lead[]>([]);
   const [backendStatus, setBackendStatus] = useState<'checking' | 'online' | 'offline'>('checking');
+  const [mockupLeadId, setMockupLeadId] = useState('');
+  const [mockupStyle, setMockupStyle] = useState<'clean' | 'warm' | 'bold'>('clean');
 
   useEffect(() => {
     localStorage.setItem('leads', JSON.stringify(leads));
@@ -179,7 +182,7 @@ function App() {
           estado: r.estado,
           endereco: r.endereco || '',
           telefone: r.telefone || '',
-          instagram: '',
+          instagram: r.instagram || '',
           seguidores: 0,
           temSite: !!r.website,
           siteUrl: r.website || '',
@@ -264,6 +267,43 @@ function App() {
     if (selectedLead?.id === leadId) {
       setSelectedLead({ ...selectedLead, ...updates });
     }
+  };
+
+  const mockupLead = leads.find((lead) => lead.id === mockupLeadId) || leads[0];
+
+  const escapeHtml = (value: string) => value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+
+  const buildMockupHtml = (lead: Lead) => {
+    const palettes = {
+      clean: { accent: '#0f766e', soft: '#ccfbf1', ink: '#12312f' },
+      warm: { accent: '#c2410c', soft: '#ffedd5', ink: '#431407' },
+      bold: { accent: '#7c3aed', soft: '#ede9fe', ink: '#2e1065' }
+    };
+    const palette = palettes[mockupStyle];
+    const name = escapeHtml(lead.negocio);
+    const niche = escapeHtml(lead.nicho || 'Atendimento especializado');
+    const city = escapeHtml(`${lead.cidade}/${lead.estado}`);
+    const address = escapeHtml(lead.endereco || 'Atendimento em localização privilegiada');
+    const phone = escapeHtml(lead.telefone || 'Fale conosco');
+    const rating = lead.rating ? `${lead.rating.toFixed(1)} de 5` : 'Avaliação no Google';
+    const phoneLink = lead.telefone ? `tel:${lead.telefone.replace(/\D/g, '')}` : '#contato';
+
+    return `<!doctype html><html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${name}</title><style>
+      *{box-sizing:border-box}body{margin:0;font-family:Arial,sans-serif;color:${palette.ink};background:#fffaf5}a{text-decoration:none;color:inherit}.top{padding:22px 7%;display:flex;justify-content:space-between;align-items:center;background:#fff}.brand{font-size:22px;font-weight:800}.nav{display:flex;gap:24px;font-size:14px}.hero{padding:88px 7%;background:linear-gradient(115deg,${palette.soft},#fffaf5 65%);display:grid;grid-template-columns:1.15fr .85fr;gap:45px;align-items:center}.eyebrow{text-transform:uppercase;letter-spacing:2px;font-size:12px;color:${palette.accent};font-weight:bold}.hero h1{font-size:clamp(40px,6vw,72px);line-height:1.02;margin:16px 0}.hero p{font-size:19px;line-height:1.6;max-width:570px;color:#55615e}.cta{display:inline-block;margin-top:20px;padding:15px 22px;border-radius:8px;background:${palette.accent};color:#fff;font-weight:bold}.showcase{min-height:340px;border-radius:22px;background:${palette.accent};display:grid;place-items:center;color:white;padding:30px;text-align:center;box-shadow:16px 18px 0 ${palette.ink}20}.showcase strong{font-size:68px;display:block}.section{padding:70px 7%;text-align:center}.section h2{font-size:36px;margin:0 0 15px}.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:35px;text-align:left}.card{background:#fff;padding:25px;border:1px solid #eadfd5;border-radius:12px}.card b{display:block;font-size:18px;margin-bottom:10px}.contact{padding:55px 7%;background:${palette.ink};color:white;display:flex;justify-content:space-between;gap:20px;align-items:center}.contact h2{margin:0;font-size:32px}.contact a{background:${palette.soft};color:${palette.ink};padding:14px 20px;border-radius:8px;font-weight:bold}@media(max-width:700px){.nav{display:none}.hero{grid-template-columns:1fr;padding-top:55px}.cards{grid-template-columns:1fr}.contact{display:block}.contact a{display:inline-block;margin-top:20px}}
+    </style></head><body><header class="top"><div class="brand">${name}</div><nav class="nav"><a href="#sobre">Sobre</a><a href="#servicos">Serviços</a><a href="#contato">Contato</a></nav></header><main><section class="hero"><div><div class="eyebrow">${niche} · ${city}</div><h1>Seu cuidado começa aqui.</h1><p>Atendimento próximo, confiança e uma experiência pensada para você. Conheça o trabalho de ${name}.</p><a class="cta" href="${phoneLink}">Agendar atendimento</a></div><div class="showcase"><div><strong>★</strong><span>${escapeHtml(rating)}${lead.googleReviews ? ` · ${lead.googleReviews} avaliações` : ''}</span></div></div></section><section class="section" id="servicos"><div class="eyebrow">Uma experiência melhor</div><h2>Feito para conquistar confiança</h2><div class="cards"><div class="card"><b>Atendimento humano</b><span>Conte com uma equipe pronta para entender o que você precisa.</span></div><div class="card"><b>Qualidade em cada detalhe</b><span>Serviços realizados com cuidado, experiência e transparência.</span></div><div class="card"><b>Fale com a gente</b><span>Agende seu horário de forma simples e rápida.</span></div></div></section><section class="contact" id="contato"><div><h2>Vamos conversar?</h2><p>${address}</p></div><a href="${phoneLink}">${phone}</a></section></main></body></html>`;
+  };
+
+  const openMockup = () => {
+    if (!mockupLead) return;
+    const preview = window.open('', '_blank');
+    if (!preview) return;
+    preview.document.write(buildMockupHtml(mockupLead));
+    preview.document.close();
   };
 
   const stats = {
@@ -561,7 +601,10 @@ function App() {
                       <button
                         key={lead.id}
                         type="button"
-                        onClick={() => setSelectedLead(lead)}
+                        onClick={() => {
+                          setSelectedLead(lead);
+                          setIsLeadDetailsOpen(true);
+                        }}
                         className={`w-full text-left p-4 transition-colors ${selectedLead?.id === lead.id ? 'bg-green-500/10 border-l-2 border-green-500' : 'hover:bg-gray-800/70'}`}
                       >
                         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
@@ -687,16 +730,44 @@ function App() {
         )}
 
         {activeView === 'generator' && (
-          <div className="space-y-4">
-            <h1 className="text-2xl font-bold">🤖 Gerador IA</h1>
-            <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-              <p className="text-gray-400">Mensagens personalizadas para leads.</p>
-              {leads[0] && (
-                <div className="mt-4 bg-gray-800 rounded-lg p-4 text-sm text-gray-200 whitespace-pre-line">
-                  {generateMessage(leads[0])}
-                </div>
-              )}
+          <div className="space-y-6">
+            <div>
+              <h1 className="text-2xl md:text-3xl font-bold mb-2">🤖 Criar site com IA</h1>
+              <p className="text-gray-400 text-sm">Gere um mockup personalizado usando os dados reais do lead. Sem custo e sem chave de API.</p>
             </div>
+            {mockupLead ? (
+              <div className="grid xl:grid-cols-[330px_1fr] gap-4">
+                <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 space-y-5 h-fit">
+                  <div>
+                    <label className="text-xs text-gray-500 uppercase tracking-wider block mb-2">Cliente</label>
+                    <select value={mockupLeadId || mockupLead.id} onChange={(e) => setMockupLeadId(e.target.value)} className="w-full px-3 py-3 bg-gray-800 border border-gray-700 rounded-lg text-white">
+                      {leads.map((lead) => <option key={lead.id} value={lead.id}>{lead.negocio}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-500 uppercase tracking-wider block mb-2">Direção visual</label>
+                    <div className="grid grid-cols-3 gap-2">
+                      {(['clean', 'warm', 'bold'] as const).map((style) => <button key={style} type="button" onClick={() => setMockupStyle(style)} className={`py-2 rounded-lg text-xs capitalize border ${mockupStyle === style ? 'border-green-400 bg-green-500/10 text-green-300' : 'border-gray-700 text-gray-400'}`}>{style}</button>)}
+                    </div>
+                  </div>
+                  <div className="bg-gray-800/60 rounded-lg p-3 text-sm space-y-2">
+                    <div className="font-semibold text-white">{mockupLead.negocio}</div>
+                    <div className="text-gray-400">{mockupLead.nicho} · {mockupLead.cidade}</div>
+                    <div className="text-gray-400">{mockupLead.telefone || 'Telefone não informado'}</div>
+                    <div className="text-gray-400">{mockupLead.endereco || 'Endereço não informado'}</div>
+                  </div>
+                  <button type="button" onClick={openMockup} className="w-full py-3 rounded-lg bg-green-500 text-black font-bold hover:bg-green-400">↗ Abrir mockup completo</button>
+                  <p className="text-xs text-gray-500">O mockup é uma prévia comercial. Você pode ajustar o texto e o visual antes de apresentar ao cliente.</p>
+                </div>
+                <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+                  <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between"><span className="text-sm font-semibold">Prévia do site</span><span className="text-xs text-green-400">Rascunho local</span></div>
+                  <iframe title="Prévia do mockup" srcDoc={mockupLead ? buildMockupHtml(mockupLead) : ''} className="w-full h-[680px] bg-white" />
+                </div>
+              </div>
+            ) : (
+              <div className="bg-gray-900 border border-gray-800 rounded-xl p-8 text-gray-400">Faça uma busca e salve pelo menos um lead para criar um mockup.</div>
+            )}
+            {mockupLead && <div className="bg-gray-900 border border-gray-800 rounded-xl p-5"><h2 className="font-semibold mb-3">Mensagem de abordagem</h2><div className="bg-gray-800 rounded-lg p-4 text-sm text-gray-300 whitespace-pre-line">{generateMessage(mockupLead)}</div></div>}
           </div>
         )}
 
@@ -709,6 +780,74 @@ function App() {
           </div>
         )}
       </div>
+
+      {isLeadDetailsOpen && selectedLead && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Detalhes de ${selectedLead.negocio}`}
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setIsLeadDetailsOpen(false);
+          }}
+        >
+          <div className="max-h-[calc(100vh-2rem)] w-full max-w-2xl overflow-y-auto rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl">
+            <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-gray-800 bg-gray-950/95 p-5 backdrop-blur">
+              <div>
+                <div className="mb-2 text-xs uppercase tracking-[0.2em] text-gray-500">Detalhes do lead</div>
+                <h2 className="text-2xl font-bold text-white">{selectedLead.negocio}</h2>
+                <div className="mt-1 text-sm text-gray-400">{selectedLead.nicho} · {selectedLead.cidade}/{selectedLead.estado}</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsLeadDetailsOpen(false)}
+                aria-label="Fechar detalhes"
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-gray-800 text-xl text-gray-300 hover:bg-gray-700 hover:text-white"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="space-y-6 p-5">
+              <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
+                <div className="rounded-lg bg-gray-900 p-3"><div className="text-xs text-gray-500">Cidade</div><div className="mt-1 font-medium">{selectedLead.cidade}/{selectedLead.estado}</div></div>
+                <div className="rounded-lg bg-gray-900 p-3"><div className="text-xs text-gray-500">Bairro</div><div className="mt-1 font-medium">{selectedLead.bairro || 'Não informado'}</div></div>
+                <div className="rounded-lg bg-gray-900 p-3"><div className="text-xs text-gray-500">Status</div><div className="mt-1 font-medium capitalize">{selectedLead.status}</div></div>
+                <div className="rounded-lg bg-gray-900 p-3"><div className="text-xs text-gray-500">Score</div><div className="mt-1 font-medium text-green-400">{selectedLead.score}</div></div>
+              </div>
+
+              <div className="grid gap-4 text-sm md:grid-cols-2">
+                <div><div className="mb-1 text-xs text-gray-500">Website</div>{selectedLead.temSite && selectedLead.siteUrl ? <a href={selectedLead.siteUrl} target="_blank" rel="noreferrer" className="break-all text-blue-400 hover:underline">{selectedLead.siteUrl}</a> : <span className="text-gray-400">Sem site cadastrado</span>}</div>
+                <div><div className="mb-1 text-xs text-gray-500">Instagram</div>{selectedLead.instagram ? <a href={selectedLead.instagram} target="_blank" rel="noreferrer" className="break-all text-pink-400 hover:underline">{selectedLead.instagram}</a> : <span className="text-gray-400">Não informado</span>}</div>
+                <div><div className="mb-1 text-xs text-gray-500">Telefone</div><span className="text-gray-200">{selectedLead.telefone || 'Não informado'}</span></div>
+                <div><div className="mb-1 text-xs text-gray-500">Avaliação</div><span className="text-gray-200">{selectedLead.googleReviews || 0} reviews · {selectedLead.rating ? `${selectedLead.rating.toFixed(1)}★` : 'Sem nota'}</span></div>
+                <div className="md:col-span-2"><div className="mb-1 text-xs text-gray-500">Endereço</div><span className="text-gray-200">{selectedLead.endereco || 'Não informado'}</span></div>
+              </div>
+
+              <div className="border-t border-gray-800 pt-4">
+                <div className="mb-2 text-xs uppercase tracking-[0.2em] text-gray-500">Observações</div>
+                <p className="whitespace-pre-line text-sm text-gray-300">{selectedLead.notas || 'Sem observações adicionais.'}</p>
+              </div>
+
+              <div className="border-t border-gray-800 pt-4">
+                <div className="mb-3 text-xs uppercase tracking-[0.2em] text-gray-500">Atualizar status</div>
+                <div className="flex flex-wrap gap-2">
+                  {(['novo', 'contatado', 'respondido', 'reuniao', 'fechado', 'perdido'] as const).map((status) => (
+                    <button
+                      key={status}
+                      type="button"
+                      onClick={() => updateLeadStatus(selectedLead.id, status)}
+                      className={`rounded-lg px-3 py-2 text-xs font-medium capitalize transition-colors ${selectedLead.status === status ? 'bg-green-500 text-black' : 'bg-gray-800 text-gray-300 hover:bg-gray-700'}`}
+                    >
+                      {status}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

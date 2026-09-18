@@ -1,3 +1,4 @@
+import sys
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -5,6 +6,12 @@ from playwright.async_api import async_playwright
 import asyncio
 import re
 from typing import List, Optional
+
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+
+if hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8')
 
 app = FastAPI(title="LeadForge Scraper API")
 
@@ -27,12 +34,389 @@ class LeadResult(BaseModel):
     endereco: Optional[str] = None
     telefone: Optional[str] = None
     website: Optional[str] = None
+    instagram: Optional[str] = None
     google_reviews: int = 0
     rating: Optional[float] = None
     nicho: str
     bairro: Optional[str] = None
     cidade: str
     estado: str
+
+
+def normalize_text(value: Optional[str]) -> str:
+    if not value:
+        return ''
+    cleaned = str(value)
+    cleaned = cleaned.replace('\u00ee', '').replace('î', '').replace('°', '')
+    cleaned = cleaned.replace('\n', ' ')
+    cleaned = re.sub(r'\s+', ' ', cleaned)
+    cleaned = cleaned.strip(' -|:;,.')
+    return cleaned
+
+
+def sanitize_business_phone(value: Optional[str]) -> str:
+    text = normalize_text(value)
+    if not text:
+        return ''
+
+    candidates = re.findall(
+        r'(?:\+?\d{2}\s*)?(?:\(\d{2}\)|\d{2})\s*(?:\d{4,5}[\s.-]?\d{4})',
+        text,
+    )
+    if candidates:
+        candidate = normalize_text(candidates[0])
+        if len(re.sub(r'\D', '', candidate)) >= 10:
+            return candidate
+
+    digits = re.sub(r'\D', '', text)
+    if len(digits) >= 10:
+        match = re.search(r'(?:\+?\d{2}\s*)?(?:\(\d{2}\)|\d{2})\s*(?:\d{4,5}[\s.-]?\d{4})', text)
+        if match:
+            return normalize_text(match.group(0))
+
+    return ''
+
+
+def sanitize_business_url(value: Optional[str]) -> str:
+    text = normalize_text(value)
+    if not text:
+        return ''
+
+    lower = text.lower().strip().rstrip('.,;')
+    if lower.startswith('http://') or lower.startswith('https://'):
+        candidate = lower
+    elif '://' not in lower and '.' in lower and ' ' not in lower:
+        candidate = f'https://{lower}'
+    else:
+        return ''
+
+    if any(token in candidate for token in [
+        'instagram.com', 'facebook.com', 'wa.me', 'whatsapp.com', 'x.com',
+        'twitter.com', 'tiktok.com', 'linkedin.com', 'youtube.com',
+        'maps.google', 'google.com', 'googleusercontent.com', 'g.page'
+    ]):
+        return ''
+
+    if '://' not in candidate:
+        return ''
+
+    domain = candidate.split('://', 1)[1].split('/', 1)[0].split('?')[0]
+    if not domain or '.' not in domain:
+        return ''
+
+    return candidate
+
+
+def is_social_url(value: Optional[str]) -> bool:
+    text = normalize_text(value).lower()
+    return any(token in text for token in [
+        'instagram.com', 'facebook.com', 'wa.me', 'whatsapp.com', 'x.com',
+        'twitter.com', 'tiktok.com', 'linkedin.com', 'youtube.com',
+        'maps.google', 'google.com', 'googleusercontent.com', 'g.page'
+    ])
+
+
+def sanitize_instagram_url(value: Optional[str]) -> str:
+    text = normalize_text(value)
+    if 'instagram.com' not in text.lower():
+        return ''
+    if not text.lower().startswith(('http://', 'https://')):
+        text = f'https://{text}'
+    return text.rstrip('.,;')
+
+
+def sanitize_business_name(value: Optional[str]) -> str:
+    text = normalize_text(value)
+    if not text:
+        return ''
+
+    text = re.sub(r'\s*\|\s*.*$', '', text)
+    text = re.sub(r'\s*\d{1,2},\d+\s*\(\d+\)\s*.*$', '', text)
+    text = re.sub(r'\s*\(\d+\)\s*.*$', '', text)
+    return normalize_text(text)
+
+
+def sanitize_business_address(value: Optional[str]) -> str:
+    text = normalize_text(value)
+    if not text:
+        return ''
+
+    text = re.sub(r'\s*\|\s*.*$', '', text)
+    text = re.sub(r'\s*\d{1,2},\d+\s*\(\d+\)\s*.*$', '', text)
+    return normalize_text(text)
+
+
+async def extract_text_from_selectors(item, selectors: List[str]) -> str:
+    for selector in selectors:
+        try:
+            el = await item.query_selector(selector)
+            if not el:
+                continue
+            text = normalize_text(await el.inner_text())
+            if text:
+                return text
+        except Exception:
+            continue
+    return ''
+
+
+async def read_detail_panel(page):
+    detail = {}
+    selectors = {
+        'endereco': [
+            'button[aria-label*="Endereço"]',
+            'button[aria-label*="Address"]',
+            'div[aria-label*="Endereço"]',
+            'div[aria-label*="Address"]',
+            'span[aria-label*="Endereço"]',
+            'span[aria-label*="Address"]',
+        ],
+        'telefone': [
+            'button[aria-label*="Telefone"]',
+            'button[aria-label*="Phone"]',
+            'div[aria-label*="Telefone"]',
+            'div[aria-label*="Phone"]',
+            'a[href^="tel:"]',
+        ],
+        'rating': [
+            'span[aria-label*="estrelas"]',
+            'span[aria-label*="stars"]',
+            'span[aria-label*="avaliações"]',
+            'span[aria-label*="reviews"]',
+        ],
+    }
+
+    for key, values in selectors.items():
+        for selector in values:
+            try:
+                locator = page.locator(selector).first
+                if await locator.count() == 0:
+                    continue
+                text = normalize_text(await locator.inner_text())
+                if text and text.lower() not in {'null', 'none', 'undefined'}:
+                    detail[key] = text
+                    break
+            except Exception:
+                continue
+
+    try:
+        links = await page.locator('a[href]').all()
+        for link in links:
+            href = await link.get_attribute('href') or ''
+            if not href.startswith(('http://', 'https://')):
+                continue
+            instagram = sanitize_instagram_url(href)
+            if instagram and not detail.get('instagram'):
+                detail['instagram'] = instagram
+                continue
+            official_site = sanitize_business_url(href)
+            if official_site and not detail.get('website'):
+                detail['website'] = official_site
+    except Exception:
+        pass
+
+    if detail.get('rating'):
+        match = re.search(r'(\d+[,.]?\d*)', detail['rating'].replace(',', '.'))
+        if match:
+            detail['rating_value'] = float(match.group(1))
+        reviews_match = re.search(r'(\d+)\s*(?:avaliações|reviews)', detail['rating'], re.IGNORECASE)
+        if reviews_match:
+            detail['google_reviews'] = int(reviews_match.group(1))
+
+    return detail
+
+
+async def find_bio_website(context, instagram_url: str) -> str:
+    if not instagram_url:
+        return ''
+    profile_page = await context.new_page()
+    try:
+        await profile_page.goto(instagram_url, wait_until='domcontentloaded', timeout=15000)
+        await profile_page.wait_for_timeout(1200)
+        links = await profile_page.locator('a[href]').all()
+        for link in links:
+            href = await link.get_attribute('href') or ''
+            if not href.startswith(('http://', 'https://')) or is_social_url(href):
+                continue
+            final_url = href
+            if any(shortener in href.lower() for shortener in ['bit.ly', 'tinyurl.com', 't.co', 'cutt.ly', 'goo.gl']):
+                try:
+                    await profile_page.goto(href, wait_until='domcontentloaded', timeout=10000)
+                    final_url = profile_page.url
+                except Exception:
+                    pass
+            website = sanitize_business_url(final_url)
+            if website:
+                return website
+    except Exception:
+        return ''
+    finally:
+        await profile_page.close()
+    return ''
+
+
+async def extract_card_data(item, page, query: str, cidade: str, estado: str):
+    card_text = normalize_text(await item.inner_text())
+
+    name = await extract_text_from_selectors(item, [
+        'div.fontHeadlineSmall',
+        'h2',
+        'h3',
+        'div[role="heading"]',
+        '[data-result-id]',
+        'span[title]',
+    ])
+    if not name:
+        name = card_text.split('·')[0].strip() if card_text else ''
+
+    address = await extract_text_from_selectors(item, [
+        'div[aria-label*="Endereço"]',
+        'div[aria-label*="Address"]',
+        'div[jsaction*="mouseenter"]',
+        'button[aria-label*="Endereço"]',
+        'button[aria-label*="Address"]',
+    ])
+    if not address:
+        for line in card_text.split('·'):
+            candidate = normalize_text(line)
+            if not candidate:
+                continue
+            lower = candidate.lower()
+            if any(token in lower for token in ['rua', 'avenida', 'av.', 'av ', 'travessa', 'alameda', 'praça', 'bairro', 'centro', 'pato branco']):
+                address = candidate
+                break
+
+    phone = await extract_text_from_selectors(item, [
+        'div[aria-label*="Telefone"]',
+        'div[aria-label*="Phone"]',
+        'button[aria-label*="Telefone"]',
+        'button[aria-label*="Phone"]',
+        'a[aria-label*="Telefone"]',
+        'a[aria-label*="Phone"]',
+    ])
+    if not phone:
+        phone_matches = re.findall(r'(?:(?:\+?\d{2})\s*(?:\(?\d{2}\)?\s*)?(?:\d{4,5}[\s.-]?\d{4}))', card_text)
+        if phone_matches:
+            phone = phone_matches[0]
+
+    website = await extract_text_from_selectors(item, [
+        'a[href*="http"]',
+        'a[href*="www."]',
+        'div[aria-label*="Site"]',
+        'div[aria-label*="Website"]',
+    ])
+    if not website:
+        href_candidates = []
+        try:
+            links = await item.query_selector_all('a[href]')
+            for link in links:
+                try:
+                    href = await link.get_attribute('href') or ''
+                    if href and 'google' not in href.lower() and 'maps.google' not in href.lower() and 'javascript:' not in href.lower():
+                        href_candidates.append(href)
+                except Exception:
+                    continue
+            if href_candidates:
+                website = href_candidates[0]
+        except Exception:
+            website = ''
+    if not website:
+        website_match = re.search(r'https?://[^\s]+|www\.[^\s]+', card_text)
+        if website_match:
+            website = website_match.group(0)
+
+    instagram = sanitize_instagram_url(website)
+    website = sanitize_business_url(website)
+    if instagram:
+        website = ''
+
+    try:
+        links = await item.query_selector_all('a[href]')
+        for link in links:
+            href = await link.get_attribute('href') or ''
+            if not href.startswith(('http://', 'https://')):
+                continue
+            if not instagram:
+                instagram = sanitize_instagram_url(href)
+            if not website:
+                website = sanitize_business_url(href)
+    except Exception:
+        pass
+
+    rating = None
+    google_reviews = 0
+    rating_el = await extract_text_from_selectors(item, [
+        'span[aria-label*="estrelas"]',
+        'span[aria-label*="stars"]',
+        'span[aria-label*="avaliações"]',
+        'span[aria-label*="reviews"]',
+    ])
+    if rating_el:
+        rating_match = re.search(r'(\d+[,.]?\d*)', rating_el.replace(',', '.'))
+        if rating_match:
+            try:
+                rating = float(rating_match.group(1))
+            except ValueError:
+                rating = None
+        reviews_match = re.search(r'(\d+)\s*(?:avaliações|reviews)', rating_el, re.IGNORECASE)
+        if reviews_match:
+            google_reviews = int(reviews_match.group(1))
+    if rating is None:
+        rating_match = re.search(r'(\d+[,.]?\d*)\s*(?:estrela|star)', card_text, re.IGNORECASE)
+        if rating_match:
+            try:
+                rating = float(rating_match.group(1).replace(',', '.'))
+            except ValueError:
+                rating = None
+    if google_reviews == 0:
+        reviews_match = re.search(r'(\d+)\s*(?:avaliações|reviews)', card_text, re.IGNORECASE)
+        if reviews_match:
+            google_reviews = int(reviews_match.group(1))
+
+    if not address or not phone or not website or rating is None:
+        try:
+            await item.click()
+            await page.wait_for_timeout(2000)
+            detail = await read_detail_panel(page)
+            if not address and detail.get('endereco'):
+                address = detail['endereco']
+            if not phone and detail.get('telefone'):
+                phone = detail['telefone']
+            if not website and detail.get('website'):
+                website = detail['website']
+            if not instagram and detail.get('instagram'):
+                instagram = detail['instagram']
+            if not website and instagram:
+                website = await find_bio_website(page.context, instagram)
+            if rating is None and detail.get('rating_value') is not None:
+                rating = detail['rating_value']
+            if google_reviews == 0 and detail.get('google_reviews'):
+                google_reviews = detail['google_reviews']
+        except Exception:
+            pass
+
+    business_name = sanitize_business_name(name)
+    clean_address = sanitize_business_address(address)
+    clean_phone = sanitize_business_phone(phone)
+    clean_url = sanitize_business_url(website)
+
+    if not clean_url and clean_phone and business_name and clean_address:
+        pass
+
+    return {
+        'negocio': business_name or 'Não informado',
+        'endereco': clean_address or '',
+        'telefone': clean_phone or '',
+        'website': clean_url or '',
+        'instagram': instagram or '',
+        'google_reviews': google_reviews,
+        'rating': rating,
+        'nicho': query,
+        'bairro': '',
+        'cidade': cidade,
+        'estado': estado,
+    }
+
 
 async def scrape_google_maps(query: str, cidade: str, estado: str, max_results: int = 20) -> List[dict]:
     results = []
@@ -54,12 +438,12 @@ async def scrape_google_maps(query: str, cidade: str, estado: str, max_results: 
         page = await context.new_page()
         search_query = f"{query} em {cidade} {estado}"
         url = f"https://www.google.com/maps/search/{search_query.replace(' ', '+')}"
-        print(f"🔍 Buscando: {search_query}")
+        print(f"Buscando: {search_query}")
 
         try:
             response = await page.goto(url, wait_until='domcontentloaded', timeout=60000)
             if response and response.status >= 400:
-                print(f"⚠️ Google Maps retornou status {response.status} para {url}")
+                print(f"Google Maps retornou status {response.status} para {url}")
                 return []
             await page.wait_for_timeout(5000)
 
@@ -73,66 +457,24 @@ async def scrape_google_maps(query: str, cidade: str, estado: str, max_results: 
                     if len(results) >= max_results:
                         break
                     try:
-                        nome_el = await item.query_selector('div.fontHeadlineSmall')
-                        nome = await nome_el.inner_text() if nome_el else ''
-                        if not nome or nome in [r['negocio'] for r in results]:
+                        card_data = await extract_card_data(item, page, query, cidade, estado)
+                        nome = card_data['negocio']
+                        if not nome or nome == 'Não informado' or nome in [r['negocio'] for r in results]:
                             continue
 
-                        endereco = ''
-                        endereco_el = await item.query_selector('div[aria-label*="Endereço"], div[aria-label*="Address"]')
-                        if endereco_el:
-                            endereco = await endereco_el.get_attribute('aria-label') or ''
-
-                        telefone = ''
-                        tel_el = await item.query_selector('div[aria-label*="Telefone"], div[aria-label*="Phone"]')
-                        if tel_el:
-                            telefone = await tel_el.get_attribute('aria-label') or ''
-
-                        website = ''
-                        site_el = await item.query_selector('div[aria-label*="Site"], div[aria-label*="Website"]')
-                        if site_el:
-                            website = await site_el.get_attribute('aria-label') or ''
-
-                        rating = None
-                        google_reviews = 0
-                        rating_el = await item.query_selector('span[aria-label*="estrelas"], span[aria-label*="stars"]')
-                        if rating_el:
-                            rating_text = await rating_el.get_attribute('aria-label') or ''
-                            rating_match = re.search(r'(\d+[,.]?\d*)', rating_text.replace(',', '.'))
-                            if rating_match:
-                                rating = float(rating_match.group(1))
-
-                        reviews_el = await item.query_selector('span[aria-label*="avaliações"], span[aria-label*="reviews"]')
-                        if reviews_el:
-                            reviews_text = await reviews_el.get_attribute('aria-label') or ''
-                            reviews_match = re.search(r'(\d+)', reviews_text)
-                            if reviews_match:
-                                google_reviews = int(reviews_match.group(1))
-
-                        results.append({
-                            'negocio': nome,
-                            'endereco': endereco,
-                            'telefone': telefone,
-                            'website': website,
-                            'google_reviews': google_reviews,
-                            'rating': rating,
-                            'nicho': query,
-                            'bairro': '',
-                            'cidade': cidade,
-                            'estado': estado,
-                        })
+                        results.append(card_data)
                     except Exception as e:
-                        print(f"⚠️ Erro ao extrair item: {e}")
+                        print(f"Erro ao extrair item: {e}")
                         continue
 
                 await page.mouse.wheel(0, 1000)
                 await page.wait_for_timeout(2000)
                 scroll_attempts += 1
 
-            print(f"✅ Scraping concluído! {len(results)} resultados encontrados.")
+            print(f"Scraping concluído! {len(results)} resultados encontrados.")
             return results
         except Exception as e:
-            print(f"❌ Erro de scraping: {e}")
+            print(f"Erro de scraping: {e}")
             return []
         finally:
             await browser.close()
@@ -166,6 +508,6 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
-    print("🚀 Iniciando LeadForge Scraper API...")
-    print("📍 API disponível em: http://localhost:8000")
+    print("Iniciando LeadForge Scraper API...")
+    print("API disponível em: http://localhost:8000")
     uvicorn.run(app, host="0.0.0.0", port=8000)
