@@ -4,7 +4,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$projectRoot = 'C:\www\Mikeia\www\LeadForge\LeadForge'
+$projectRoot = 'C:\www\Mikeia\www\LeadForge'
 $nssm = 'C:\www\nssm-2.24\win64\nssm.exe'
 $python = Join-Path $projectRoot '.venv\Scripts\python.exe'
 $playwrightBrowsers = Join-Path $projectRoot '.playwright-browsers'

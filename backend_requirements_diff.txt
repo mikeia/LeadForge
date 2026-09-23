@@ -1,8 +1,0 @@
---- backend/requirements.txt (原始)
-
-
-+++ backend/requirements.txt (修改后)
-fastapi==0.109.0
-uvicorn[standard]==0.27.0
-playwright==1.41.0
-pydantic==2.5.3

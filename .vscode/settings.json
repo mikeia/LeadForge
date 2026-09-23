@@ -5,6 +5,11 @@
         "pip": true,
         "playwright": true,
         "py": true,
-        ".\\venv\\Scripts\\python.exe": true
+        ".\\venv\\Scripts\\python.exe": true,
+        ".\\.venv\\Scripts\\python": true,
+        "Test-Path": true,
+        "&": true,
+        "Push-Location": true,
+        "Pop-Location": true
     }
 }
