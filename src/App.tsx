@@ -14,6 +14,7 @@ interface Lead {
   seguidores: number;
   temSite: boolean;
   siteUrl?: string;
+  googleUrl?: string;
   googleReviews: number;
   rating?: number;
   score: number;
@@ -49,7 +50,23 @@ const nichosSugeridos = [
   'Farmácia', 'Advocacia', 'Contabilidade', 'Loja'
 ];
 
+const statusTabs = [
+  { value: 'all', label: 'Todos' },
+  { value: 'novo', label: 'Novo' },
+  { value: 'contatado', label: 'Contatado' },
+  { value: 'respondido', label: 'Respondido' },
+  { value: 'reuniao', label: 'Reunião' },
+  { value: 'fechado', label: 'Fechado' },
+  { value: 'perdido', label: 'Perdido' },
+] as const;
+
 const API_URL = 'http://localhost:8000';
+
+const getGoogleMapsUrl = (lead: Lead): string => {
+  if (lead.googleUrl) return lead.googleUrl;
+  const query = [lead.negocio, lead.endereco, lead.cidade, lead.estado].filter(Boolean).join(', ');
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
+};
 
 function App() {
   const [leads, setLeads] = useState<Lead[]>(() => {
@@ -186,6 +203,7 @@ function App() {
           seguidores: 0,
           temSite: !!r.website,
           siteUrl: r.website || '',
+          googleUrl: r.google_url || '',
           googleReviews: r.google_reviews || 0,
           rating: r.rating,
           score: calcularScore(r),
@@ -594,8 +612,31 @@ function App() {
 
         {activeView === 'leads' && (
           <div className="space-y-4">
-            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+            <div className="flex flex-col gap-4">
               <h1 className="text-2xl font-bold">🎯 Leads</h1>
+              <div className="flex gap-2 overflow-x-auto border-b border-gray-800 pb-1">
+                {statusTabs.map((tab) => {
+                  const count = tab.value === 'all'
+                    ? leads.length
+                    : leads.filter((lead) => lead.status === tab.value).length;
+                  const isActive = filterStatus === tab.value;
+
+                  return (
+                    <button
+                      key={tab.value}
+                      type="button"
+                      onClick={() => setFilterStatus(tab.value)}
+                      className={`shrink-0 border-b-2 px-3 py-2 text-sm font-medium transition-colors ${isActive ? 'border-green-500 text-green-400' : 'border-transparent text-gray-400 hover:border-gray-600 hover:text-gray-200'}`}
+                    >
+                      {tab.label}
+                      <span className={`ml-2 rounded-full px-2 py-0.5 text-xs ${isActive ? 'bg-green-500/15 text-green-300' : 'bg-gray-800 text-gray-500'}`}>
+                        {count}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="flex justify-end">
               <input
                 type="text"
                 placeholder="Buscar por nome, bairro ou negócio"
@@ -603,6 +644,7 @@ function App() {
                 onChange={(e) => setSearchTerm(e.target.value)}
                 className="w-full md:w-80 px-4 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white"
               />
+              </div>
             </div>
 
             <div className="grid xl:grid-cols-[1.65fr_0.95fr] gap-4">
@@ -831,6 +873,16 @@ function App() {
               </div>
 
               <div className="grid gap-4 text-sm md:grid-cols-2">
+                <div>
+                  <div className="mb-1 text-xs text-gray-500">Confirmar no Google</div>
+                  {selectedLead.negocio ? (
+                    <a href={getGoogleMapsUrl(selectedLead)} target="_blank" rel="noreferrer" className="inline-flex items-center rounded-lg bg-blue-500 px-3 py-2 font-semibold text-white hover:bg-blue-400">
+                      Google
+                    </a>
+                  ) : (
+                    <span className="text-gray-400">Link não informado</span>
+                  )}
+                </div>
                 <div><div className="mb-1 text-xs text-gray-500">Website</div>{selectedLead.temSite && selectedLead.siteUrl ? <a href={selectedLead.siteUrl} target="_blank" rel="noreferrer" className="break-all text-blue-400 hover:underline">{selectedLead.siteUrl}</a> : <span className="text-gray-400">Sem site cadastrado</span>}</div>
                 <div><div className="mb-1 text-xs text-gray-500">Instagram</div>{selectedLead.instagram ? <a href={selectedLead.instagram} target="_blank" rel="noreferrer" className="break-all text-pink-400 hover:underline">{selectedLead.instagram}</a> : <span className="text-gray-400">Não informado</span>}</div>
                 <div><div className="mb-1 text-xs text-gray-500">Telefone</div><span className="text-gray-200">{selectedLead.telefone || 'Não informado'}</span></div>

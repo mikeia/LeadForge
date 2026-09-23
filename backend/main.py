@@ -1,12 +1,20 @@
+import os
 import sys
+from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+
+os.environ.setdefault(
+    'PLAYWRIGHT_BROWSERS_PATH',
+    str(Path(__file__).resolve().parent.parent / '.playwright-browsers'),
+)
+
 from pydantic import BaseModel
 from playwright.async_api import async_playwright
 import asyncio
 import re
 from typing import List, Optional
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
@@ -36,6 +44,7 @@ class LeadResult(BaseModel):
     telefone: Optional[str] = None
     website: Optional[str] = None
     instagram: Optional[str] = None
+    google_url: Optional[str] = None
     google_reviews: int = 0
     rating: Optional[float] = None
     nicho: str
@@ -217,22 +226,6 @@ async def read_detail_panel(page):
             except Exception:
                 continue
 
-    try:
-        links = await page.locator('a[href]').all()
-        for link in links:
-            href = await link.get_attribute('href') or ''
-            if not href.startswith(('http://', 'https://')):
-                continue
-            instagram = sanitize_instagram_url(href)
-            if instagram and not detail.get('instagram'):
-                detail['instagram'] = instagram
-                continue
-            official_site = sanitize_business_url(href)
-            if official_site and not detail.get('website'):
-                detail['website'] = official_site
-    except Exception:
-        pass
-
     if detail.get('rating'):
         match = re.search(r'(\d+[,.]?\d*)', detail['rating'].replace(',', '.'))
         if match:
@@ -275,6 +268,18 @@ async def find_bio_website(context, instagram_url: str) -> str:
 
 async def extract_card_data(item, page, query: str, cidade: str, estado: str):
     card_text = normalize_text(await item.inner_text())
+    google_url = ''
+
+    try:
+        links = await item.query_selector_all('a[href]')
+        for link in links:
+            href = await link.get_attribute('href') or ''
+            absolute_href = urljoin(page.url, href)
+            if '/maps/' in absolute_href.lower() or 'google.com/maps' in absolute_href.lower():
+                google_url = absolute_href
+                break
+    except Exception:
+        pass
 
     name = await extract_text_from_selectors(item, [
         'div.fontHeadlineSmall',
@@ -427,6 +432,7 @@ async def extract_card_data(item, page, query: str, cidade: str, estado: str):
         'telefone': clean_phone or '',
         'website': clean_url or '',
         'instagram': instagram or '',
+        'google_url': google_url,
         'google_reviews': google_reviews,
         'rating': rating,
         'nicho': query,
