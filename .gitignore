@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+.venv/
+.playwright-browsers/
+
+# Build output
+dist/
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
+
+# Python
+__pycache__/
+*.pyc
+
+# Logs
+*.log
+*.err
+service-logs/
+
+# Env
+.env
+.env.local
+
+# Editor
+.vscode/*
+!.vscode/settings.json
+
+# OS
+Thumbs.db
