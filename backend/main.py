@@ -191,6 +191,7 @@ async def read_detail_panel(page):
     detail = {}
     selectors = {
         'endereco': [
+            '[data-item-id="address"]',
             'button[aria-label*="Endereço"]',
             'button[aria-label*="Address"]',
             'div[aria-label*="Endereço"]',
@@ -199,8 +200,12 @@ async def read_detail_panel(page):
             'span[aria-label*="Address"]',
         ],
         'telefone': [
+            '[data-item-id="phone"]',
             'button[aria-label*="Telefone"]',
             'button[aria-label*="Phone"]',
+            'button[aria-label*="Ligar"]',
+            'button[aria-label*="Call"]',
+            '[data-item-id^="phone:"]',
             'div[aria-label*="Telefone"]',
             'div[aria-label*="Phone"]',
             'a[href^="tel:"]',
@@ -220,11 +225,32 @@ async def read_detail_panel(page):
                 if await locator.count() == 0:
                     continue
                 text = normalize_text(await locator.inner_text())
+                if not text:
+                    text = normalize_text(await locator.get_attribute('aria-label'))
+                if not text:
+                    href = await locator.get_attribute('href') or ''
+                    if href.startswith('tel:'):
+                        text = href.removeprefix('tel:')
                 if text and text.lower() not in {'null', 'none', 'undefined'}:
                     detail[key] = text
                     break
             except Exception:
                 continue
+
+    try:
+        authority = page.locator('[data-item-id="authority"]').first
+        if await authority.count() > 0:
+            website = sanitize_business_url(await authority.get_attribute('href'))
+            if website:
+                detail['website'] = website
+
+        instagram_link = page.locator('a[href*="instagram.com"]').first
+        if await instagram_link.count() > 0:
+            instagram = sanitize_instagram_url(await instagram_link.get_attribute('href'))
+            if instagram:
+                detail['instagram'] = instagram
+    except Exception:
+        pass
 
     if detail.get('rating'):
         match = re.search(r'(\d+[,.]?\d*)', detail['rating'].replace(',', '.'))
@@ -269,6 +295,7 @@ async def find_bio_website(context, instagram_url: str) -> str:
 async def extract_card_data(item, page, query: str, cidade: str, estado: str):
     card_text = normalize_text(await item.inner_text())
     google_url = ''
+    place_link = None
 
     try:
         links = await item.query_selector_all('a[href]')
@@ -277,6 +304,7 @@ async def extract_card_data(item, page, query: str, cidade: str, estado: str):
             absolute_href = urljoin(page.url, href)
             if '/maps/' in absolute_href.lower() or 'google.com/maps' in absolute_href.lower():
                 google_url = absolute_href
+                place_link = link
                 break
     except Exception:
         pass
@@ -293,9 +321,9 @@ async def extract_card_data(item, page, query: str, cidade: str, estado: str):
         name = card_text.split('·')[0].strip() if card_text else ''
 
     address = await extract_text_from_selectors(item, [
+        '[data-item-id="address"]',
         'div[aria-label*="Endereço"]',
         'div[aria-label*="Address"]',
-        'div[jsaction*="mouseenter"]',
         'button[aria-label*="Endereço"]',
         'button[aria-label*="Address"]',
     ])
@@ -398,9 +426,34 @@ async def extract_card_data(item, page, query: str, cidade: str, estado: str):
 
     if not address or not phone or not website or rating is None:
         try:
-            await item.click()
-            await page.wait_for_timeout(2000)
+            previous_heading = ''
+            try:
+                heading_before = page.locator('h1').first
+                if await heading_before.count() > 0:
+                    previous_heading = normalize_text(await heading_before.inner_text())
+            except Exception:
+                previous_heading = ''
+
+            click_target = place_link or item
+            await click_target.scroll_into_view_if_needed()
+            await click_target.click()
+
+            try:
+                await page.wait_for_function(
+                    """(prev) => {
+                        const h1 = document.querySelector('h1');
+                        const text = h1 && h1.innerText ? h1.innerText.trim() : '';
+                        return text !== '' && text !== prev;
+                    }""",
+                    arg=previous_heading,
+                    timeout=8000,
+                )
+            except Exception:
+                pass
+
             detail = await read_detail_panel(page)
+            if '/maps/place/' in page.url:
+                google_url = page.url
             if not address and detail.get('endereco'):
                 address = detail['endereco']
             if not phone and detail.get('telefone'):
@@ -415,6 +468,16 @@ async def extract_card_data(item, page, query: str, cidade: str, estado: str):
                 rating = detail['rating_value']
             if google_reviews == 0 and detail.get('google_reviews'):
                 google_reviews = detail['google_reviews']
+
+            try:
+                back_button = page.locator('button[aria-label*="Voltar"], button[aria-label*="Back"]').first
+                if await back_button.count() > 0:
+                    await back_button.click()
+                else:
+                    await page.go_back()
+                await page.wait_for_selector('div[role="article"]', timeout=8000)
+            except Exception:
+                pass
         except Exception:
             pass
 
