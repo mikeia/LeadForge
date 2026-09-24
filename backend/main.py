@@ -87,6 +87,27 @@ def sanitize_business_phone(value: Optional[str]) -> str:
     return ''
 
 
+REDIRECTOR_HOSTS = (
+    'google.',
+    'l.instagram.com',
+    'lm.instagram.com',
+    'l.facebook.com',
+    'lm.facebook.com',
+)
+
+NON_BUSINESS_DOMAINS = [
+    'instagram.com', 'facebook.com', 'wa.me', 'whatsapp.com', 'x.com',
+    'twitter.com', 'tiktok.com', 'linkedin.com', 'youtube.com',
+    'maps.google', 'google.com', 'googleusercontent.com', 'g.page',
+    'meta.com', 'help.instagram.com', 'l.facebook.com', 'threads.net',
+]
+
+LINK_AGGREGATOR_HOSTS = (
+    'bit.ly', 'tinyurl.com', 't.co', 'cutt.ly', 'goo.gl',
+    'linktr.ee', 'linktree.com', 'beacons.ai', 'lnk.bio', 'bio.link', 'msha.ke',
+)
+
+
 def unwrap_google_url(value: Optional[str]) -> str:
     text = normalize_text(value)
     if not text:
@@ -95,9 +116,9 @@ def unwrap_google_url(value: Optional[str]) -> str:
     if text.startswith(('http://', 'https://')):
         parsed = urlparse(text)
         host = parsed.netloc.lower()
-        if 'google.' in host or host.startswith('www.google.'):
+        if any(host == marker or host.endswith('.' + marker.rstrip('.')) or marker in host for marker in REDIRECTOR_HOSTS):
             params = parse_qs(parsed.query)
-            for key in ('q', 'url', 'u'):
+            for key in ('q', 'url', 'u', 'uri'):
                 target = params.get(key, [''])[0]
                 if target.startswith(('http://', 'https://')):
                     return unquote(target)
@@ -117,11 +138,7 @@ def sanitize_business_url(value: Optional[str]) -> str:
     else:
         return ''
 
-    if any(token in candidate for token in [
-        'instagram.com', 'facebook.com', 'wa.me', 'whatsapp.com', 'x.com',
-        'twitter.com', 'tiktok.com', 'linkedin.com', 'youtube.com',
-        'maps.google', 'google.com', 'googleusercontent.com', 'g.page'
-    ]):
+    if any(token in candidate for token in NON_BUSINESS_DOMAINS):
         return ''
 
     if '://' not in candidate:
@@ -136,11 +153,7 @@ def sanitize_business_url(value: Optional[str]) -> str:
 
 def is_social_url(value: Optional[str]) -> bool:
     text = normalize_text(value).lower()
-    return any(token in text for token in [
-        'instagram.com', 'facebook.com', 'wa.me', 'whatsapp.com', 'x.com',
-        'twitter.com', 'tiktok.com', 'linkedin.com', 'youtube.com',
-        'maps.google', 'google.com', 'googleusercontent.com', 'g.page'
-    ])
+    return any(token in text for token in NON_BUSINESS_DOMAINS)
 
 
 def sanitize_instagram_url(value: Optional[str]) -> str:
@@ -273,12 +286,14 @@ async def find_bio_website(context, instagram_url: str) -> str:
         links = await profile_page.locator('a[href]').all()
         for link in links:
             href = await link.get_attribute('href') or ''
-            if not href.startswith(('http://', 'https://')) or is_social_url(href):
+            if not href.startswith(('http://', 'https://')):
                 continue
-            final_url = href
-            if any(shortener in href.lower() for shortener in ['bit.ly', 'tinyurl.com', 't.co', 'cutt.ly', 'goo.gl']):
+            final_url = unwrap_google_url(href) or href
+            if is_social_url(final_url):
+                continue
+            if any(host in final_url.lower() for host in LINK_AGGREGATOR_HOSTS):
                 try:
-                    await profile_page.goto(href, wait_until='domcontentloaded', timeout=10000)
+                    await profile_page.goto(final_url, wait_until='domcontentloaded', timeout=10000)
                     final_url = profile_page.url
                 except Exception:
                     pass
