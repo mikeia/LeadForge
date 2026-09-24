@@ -183,6 +183,15 @@ def sanitize_business_address(value: Optional[str]) -> str:
 
     text = re.sub(r'\s*\|\s*.*$', '', text)
     text = re.sub(r'\s*\d{1,2},\d+\s*\(\d+\)\s*.*$', '', text)
+    # Google's address row can render mid-load with the day's opening status
+    # run straight into it with no separator, e.g. "Av. Tupi, 2828Aberto" or
+    # "R. Itacolomi, 813 Aberto" - strip that off rather than store it.
+    text = re.sub(
+        r'\s*(Aberto|Fechado|Abre\b.*|Fecha\b.*|Open|Closed|Opens\b.*|Closes\b.*)\s*$',
+        '',
+        text,
+        flags=re.IGNORECASE,
+    )
     return normalize_text(text)
 
 
@@ -200,49 +209,64 @@ async def extract_text_from_selectors(item, selectors: List[str]) -> str:
     return ''
 
 
+def get_place_scope(page):
+    # Google keeps the results feed (div[role="feed"], the list of cards)
+    # mounted in the DOM *behind* the detail panel instead of removing it, so
+    # a page-wide selector can match another business's card (e.g. a
+    # "visit website"/social icon shown directly on that card) instead of the
+    # place that's actually open. Google tags the open place's own container
+    # with role="main" and an aria-label set to that place's name - scoping
+    # every read to it excludes the feed entirely.
+    return page.locator('div[role="main"][aria-label]').first
+
+
 async def read_detail_panel(page):
     detail = {}
-    # ':visible' matters here: Google Maps' SPA often keeps the *previous*
-    # place's detail markup in the DOM (just hidden) after navigating back,
-    # so an unscoped, page-wide selector can silently match stale data left
-    # over from the last business instead of the one currently open.
+    scope = get_place_scope(page)
+    if await scope.count() == 0:
+        scope = page
+
     selectors = {
         'endereco': [
-            '[data-item-id="address"]:visible',
-            'button[aria-label*="Endereço"]:visible',
-            'button[aria-label*="Address"]:visible',
-            'div[aria-label*="Endereço"]:visible',
-            'div[aria-label*="Address"]:visible',
-            'span[aria-label*="Endereço"]:visible',
-            'span[aria-label*="Address"]:visible',
+            '[data-item-id="address"]',
+            'button[aria-label*="Endereço"]',
+            'button[aria-label*="Address"]',
+            'div[aria-label*="Endereço"]',
+            'div[aria-label*="Address"]',
+            'span[aria-label*="Endereço"]',
+            'span[aria-label*="Address"]',
         ],
         'telefone': [
-            '[data-item-id^="phone:"]:visible',
-            'button[aria-label*="Telefone"]:visible',
-            'button[aria-label*="Phone"]:visible',
-            'button[aria-label*="Ligar"]:visible',
-            'button[aria-label*="Call"]:visible',
-            'div[aria-label*="Telefone"]:visible',
-            'div[aria-label*="Phone"]:visible',
-            'a[href^="tel:"]:visible',
+            '[data-item-id^="phone:"]',
+            'button[aria-label*="Telefone"]',
+            'button[aria-label*="Phone"]',
+            'button[aria-label*="Ligar"]',
+            'button[aria-label*="Call"]',
+            'div[aria-label*="Telefone"]',
+            'div[aria-label*="Phone"]',
+            'a[href^="tel:"]',
         ],
         'rating': [
-            'span[aria-label*="estrelas"]:visible',
-            'span[aria-label*="stars"]:visible',
-            'span[aria-label*="avaliações"]:visible',
-            'span[aria-label*="reviews"]:visible',
+            'span[aria-label*="estrelas"]',
+            'span[aria-label*="stars"]',
+            'span[aria-label*="avaliações"]',
+            'span[aria-label*="reviews"]',
         ],
     }
 
     for key, values in selectors.items():
         for selector in values:
             try:
-                locator = page.locator(selector).first
+                locator = scope.locator(selector).first
                 if await locator.count() == 0:
                     continue
-                text = normalize_text(await locator.inner_text())
+                # aria-label is preferred: inner_text() on these rows can run
+                # the address straight into an adjacent "Aberto/Fechado"
+                # hours line with no separating space between them.
+                text = normalize_text(await locator.get_attribute('aria-label'))
+                text = re.sub(r'^(endereço|address|telefone|phone)\s*:?\s*', '', text, flags=re.IGNORECASE)
                 if not text:
-                    text = normalize_text(await locator.get_attribute('aria-label'))
+                    text = normalize_text(await locator.inner_text())
                 if not text:
                     href = await locator.get_attribute('href') or ''
                     if href.startswith('tel:'):
@@ -254,13 +278,13 @@ async def read_detail_panel(page):
                 continue
 
     try:
-        authority = page.locator('[data-item-id="authority"]:visible').first
+        authority = scope.locator('[data-item-id="authority"]').first
         if await authority.count() > 0:
             website = sanitize_business_url(await authority.get_attribute('href'))
             if website:
                 detail['website'] = website
 
-        instagram_link = page.locator('a[href*="instagram.com"]:visible').first
+        instagram_link = scope.locator('a[href*="instagram.com"]').first
         if await instagram_link.count() > 0:
             instagram = sanitize_instagram_url(await instagram_link.get_attribute('href'))
             if instagram:
@@ -313,7 +337,6 @@ async def find_bio_website(context, instagram_url: str) -> str:
 async def extract_card_data(item, page, query: str, cidade: str, estado: str):
     card_text = normalize_text(await item.inner_text())
     google_url = ''
-    place_link = None
 
     try:
         links = await item.query_selector_all('a[href]')
@@ -322,7 +345,6 @@ async def extract_card_data(item, page, query: str, cidade: str, estado: str):
             absolute_href = urljoin(page.url, href)
             if '/maps/' in absolute_href.lower() or 'google.com/maps' in absolute_href.lower():
                 google_url = absolute_href
-                place_link = link
                 break
     except Exception:
         pass
@@ -449,50 +471,28 @@ async def extract_card_data(item, page, query: str, cidade: str, estado: str):
         if reviews_match:
             google_reviews = int(reviews_match.group(1))
 
-    if not address or not phone or not website or rating is None:
+    if (not address or not phone or not website or rating is None) and google_url:
+        # Open the place in its own tab instead of clicking the card and
+        # navigating back on the shared results page. Clicking through
+        # (then going back) was unreliable here - Google Maps' results feed
+        # stays mounted behind the detail panel, and returning to it via
+        # history back-navigation sometimes landed on a blank page, which
+        # invalidated every remaining card's element handle and silently
+        # dropped the rest of that batch. A separate tab can't corrupt the
+        # results list at all, and closes cleanly when done.
+        detail_page = None
         try:
-            previous_heading = ''
+            detail_page = await page.context.new_page()
+            await detail_page.goto(google_url, wait_until='domcontentloaded', timeout=30000)
             try:
-                heading_before = page.locator('h1:visible').first
-                if await heading_before.count() > 0:
-                    previous_heading = normalize_text(await heading_before.inner_text())
+                await detail_page.wait_for_selector('[data-item-id="address"], [data-item-id^="phone:"]', timeout=8000)
             except Exception:
-                previous_heading = ''
+                pass
+            await detail_page.wait_for_timeout(1800)
 
-            # Only the *visible* h1 counts: Google Maps can leave the previous
-            # place's heading sitting hidden in the DOM instead of removing it.
-            wait_for_heading_change = """(prev) => {
-                const headings = Array.from(document.querySelectorAll('h1'));
-                const visible = headings.find(h => h.offsetParent !== null && h.innerText.trim() !== '');
-                const text = visible ? visible.innerText.trim() : '';
-                return text !== '' && text !== prev;
-            }"""
-
-            click_target = place_link or item
-            await click_target.scroll_into_view_if_needed()
-            await click_target.click()
-
-            navigated = True
-            try:
-                await page.wait_for_function(wait_for_heading_change, arg=previous_heading, timeout=8000)
-            except Exception:
-                navigated = False
-
-            if not navigated and '/maps/place/' not in page.url:
-                # The click likely hit an overlapping element (e.g. the photo
-                # thumbnail) instead of navigating. Close whatever that opened
-                # and retry once directly on the item.
-                try:
-                    await page.keyboard.press('Escape')
-                    await page.wait_for_timeout(500)
-                    await item.click()
-                    await page.wait_for_function(wait_for_heading_change, arg=previous_heading, timeout=6000)
-                except Exception:
-                    pass
-
-            detail = await read_detail_panel(page)
-            if '/maps/place/' in page.url:
-                google_url = page.url
+            detail = await read_detail_panel(detail_page)
+            if '/maps/place/' in detail_page.url:
+                google_url = detail_page.url
             if not address and detail.get('endereco'):
                 address = detail['endereco']
             if not phone and detail.get('telefone'):
@@ -507,18 +507,14 @@ async def extract_card_data(item, page, query: str, cidade: str, estado: str):
                 rating = detail['rating_value']
             if google_reviews == 0 and detail.get('google_reviews'):
                 google_reviews = detail['google_reviews']
-
-            try:
-                back_button = page.locator('button[aria-label*="Voltar"], button[aria-label*="Back"]').first
-                if await back_button.count() > 0:
-                    await back_button.click()
-                else:
-                    await page.go_back()
-                await page.wait_for_selector('div[role="article"]', timeout=8000)
-            except Exception:
-                pass
         except Exception:
             pass
+        finally:
+            if detail_page is not None:
+                try:
+                    await detail_page.close()
+                except Exception:
+                    pass
 
     business_name = sanitize_business_name(name)
     clean_address = sanitize_business_address(address)
@@ -577,11 +573,21 @@ async def scrape_google_maps(query: str, cidade: str, estado: str, max_results: 
             max_scrolls = 10
 
             while len(results) < max_results and scroll_attempts < max_scrolls:
-                items = await page.query_selector_all('div[role="article"]')
-
-                for item in items:
-                    if len(results) >= max_results:
+                # Re-query the card list before *every* item instead of once
+                # per scroll pass. Opening a place's detail panel and going
+                # back can trigger a real page navigation (not just an
+                # in-app route change) here, which invalidates every
+                # ElementHandle grabbed beforehand - reusing a stale handle
+                # for the next card silently throws and that lead gets
+                # dropped entirely. Re-fetching keeps handles valid; the
+                # name-based dedup below skips cards already captured.
+                position = 0
+                while len(results) < max_results:
+                    items = await page.query_selector_all('div[role="article"]')
+                    if position >= len(items):
                         break
+                    item = items[position]
+                    position += 1
                     try:
                         card_data = await extract_card_data(item, page, query, cidade, estado)
                         nome = card_data['negocio']
