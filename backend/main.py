@@ -202,32 +202,35 @@ async def extract_text_from_selectors(item, selectors: List[str]) -> str:
 
 async def read_detail_panel(page):
     detail = {}
+    # ':visible' matters here: Google Maps' SPA often keeps the *previous*
+    # place's detail markup in the DOM (just hidden) after navigating back,
+    # so an unscoped, page-wide selector can silently match stale data left
+    # over from the last business instead of the one currently open.
     selectors = {
         'endereco': [
-            '[data-item-id="address"]',
-            'button[aria-label*="Endereço"]',
-            'button[aria-label*="Address"]',
-            'div[aria-label*="Endereço"]',
-            'div[aria-label*="Address"]',
-            'span[aria-label*="Endereço"]',
-            'span[aria-label*="Address"]',
+            '[data-item-id="address"]:visible',
+            'button[aria-label*="Endereço"]:visible',
+            'button[aria-label*="Address"]:visible',
+            'div[aria-label*="Endereço"]:visible',
+            'div[aria-label*="Address"]:visible',
+            'span[aria-label*="Endereço"]:visible',
+            'span[aria-label*="Address"]:visible',
         ],
         'telefone': [
-            '[data-item-id="phone"]',
-            'button[aria-label*="Telefone"]',
-            'button[aria-label*="Phone"]',
-            'button[aria-label*="Ligar"]',
-            'button[aria-label*="Call"]',
-            '[data-item-id^="phone:"]',
-            'div[aria-label*="Telefone"]',
-            'div[aria-label*="Phone"]',
-            'a[href^="tel:"]',
+            '[data-item-id^="phone:"]:visible',
+            'button[aria-label*="Telefone"]:visible',
+            'button[aria-label*="Phone"]:visible',
+            'button[aria-label*="Ligar"]:visible',
+            'button[aria-label*="Call"]:visible',
+            'div[aria-label*="Telefone"]:visible',
+            'div[aria-label*="Phone"]:visible',
+            'a[href^="tel:"]:visible',
         ],
         'rating': [
-            'span[aria-label*="estrelas"]',
-            'span[aria-label*="stars"]',
-            'span[aria-label*="avaliações"]',
-            'span[aria-label*="reviews"]',
+            'span[aria-label*="estrelas"]:visible',
+            'span[aria-label*="stars"]:visible',
+            'span[aria-label*="avaliações"]:visible',
+            'span[aria-label*="reviews"]:visible',
         ],
     }
 
@@ -251,13 +254,13 @@ async def read_detail_panel(page):
                 continue
 
     try:
-        authority = page.locator('[data-item-id="authority"]').first
+        authority = page.locator('[data-item-id="authority"]:visible').first
         if await authority.count() > 0:
             website = sanitize_business_url(await authority.get_attribute('href'))
             if website:
                 detail['website'] = website
 
-        instagram_link = page.locator('a[href*="instagram.com"]').first
+        instagram_link = page.locator('a[href*="instagram.com"]:visible').first
         if await instagram_link.count() > 0:
             instagram = sanitize_instagram_url(await instagram_link.get_attribute('href'))
             if instagram:
@@ -343,12 +346,19 @@ async def extract_card_data(item, page, query: str, cidade: str, estado: str):
         'button[aria-label*="Address"]',
     ])
     if not address:
+        # Require the line to *start with* a street-type word rather than just
+        # containing one anywhere - generic tokens like "centro"/"bairro" show
+        # up inside plenty of business names (e.g. "Master Centro Automotivo")
+        # and were matching the whole card blob as a fake address.
+        street_prefixes = (
+            'rua ', 'r. ', 'av ', 'av. ', 'avenida ', 'travessa ', 'trav. ',
+            'alameda ', 'praça ', 'praca ', 'rodovia ', 'rod ', 'estrada ',
+        )
         for line in card_text.split('·'):
             candidate = normalize_text(line)
-            if not candidate:
+            if not candidate or candidate == name:
                 continue
-            lower = candidate.lower()
-            if any(token in lower for token in ['rua', 'avenida', 'av.', 'av ', 'travessa', 'alameda', 'praça', 'bairro', 'centro', 'pato branco']):
+            if candidate.lower().startswith(street_prefixes):
                 address = candidate
                 break
 
@@ -443,28 +453,42 @@ async def extract_card_data(item, page, query: str, cidade: str, estado: str):
         try:
             previous_heading = ''
             try:
-                heading_before = page.locator('h1').first
+                heading_before = page.locator('h1:visible').first
                 if await heading_before.count() > 0:
                     previous_heading = normalize_text(await heading_before.inner_text())
             except Exception:
                 previous_heading = ''
 
+            # Only the *visible* h1 counts: Google Maps can leave the previous
+            # place's heading sitting hidden in the DOM instead of removing it.
+            wait_for_heading_change = """(prev) => {
+                const headings = Array.from(document.querySelectorAll('h1'));
+                const visible = headings.find(h => h.offsetParent !== null && h.innerText.trim() !== '');
+                const text = visible ? visible.innerText.trim() : '';
+                return text !== '' && text !== prev;
+            }"""
+
             click_target = place_link or item
             await click_target.scroll_into_view_if_needed()
             await click_target.click()
 
+            navigated = True
             try:
-                await page.wait_for_function(
-                    """(prev) => {
-                        const h1 = document.querySelector('h1');
-                        const text = h1 && h1.innerText ? h1.innerText.trim() : '';
-                        return text !== '' && text !== prev;
-                    }""",
-                    arg=previous_heading,
-                    timeout=8000,
-                )
+                await page.wait_for_function(wait_for_heading_change, arg=previous_heading, timeout=8000)
             except Exception:
-                pass
+                navigated = False
+
+            if not navigated and '/maps/place/' not in page.url:
+                # The click likely hit an overlapping element (e.g. the photo
+                # thumbnail) instead of navigating. Close whatever that opened
+                # and retry once directly on the item.
+                try:
+                    await page.keyboard.press('Escape')
+                    await page.wait_for_timeout(500)
+                    await item.click()
+                    await page.wait_for_function(wait_for_heading_change, arg=previous_heading, timeout=6000)
+                except Exception:
+                    pass
 
             detail = await read_detail_panel(page)
             if '/maps/place/' in page.url:
